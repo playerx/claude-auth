@@ -1,100 +1,69 @@
 /**
- * Minimal Anthropic account (OAuth 2.0 + PKCE) authentication flow,
- * the same process Claude Code CLI uses:
+ * CLI demo for the SDK in ./sdk.ts
  *
- *   1. Generate a PKCE verifier/challenge and an authorization URL.
- *   2. Share the URL with the user; they log in at claude.ai and get a code.
- *   3. User pastes the code back (format: "code#state").
- *   4. Exchange the code for access/refresh tokens at Anthropic's token endpoint.
+ *   node src/index.ts login    interactive flow: print URL, paste code, save tokens
+ *   node src/index.ts token    print a valid access token (auto-refreshes if expired)
+ *   node src/index.ts refresh  force a refresh and save the new tokens
+ *   node src/index.ts whoami   call the API with the token to prove it works
  */
-import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline/promises";
+import { ClaudeAuthClient, createAuthorizationRequest } from "./sdk.ts";
 
-// Public OAuth client ID used by Claude Code CLI
-const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
-const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
-const SCOPES = "org:create_api_key user:profile user:inference";
+const client = new ClaudeAuthClient({ tokenFile: "tokens.json" });
 
-interface TokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
-  token_type?: string;
-}
-
-function base64url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function generatePkce() {
-  const verifier = base64url(randomBytes(32));
-  const challenge = base64url(createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-}
-
-function buildAuthorizeUrl(challenge: string, state: string): string {
-  const params = new URLSearchParams({
-    code: "true",
-    client_id: CLIENT_ID,
-    response_type: "code",
-    redirect_uri: REDIRECT_URI,
-    scope: SCOPES,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-  });
-  return `${AUTHORIZE_URL}?${params}`;
-}
-
-async function exchangeCode(pasted: string, verifier: string, state: string): Promise<TokenResponse> {
-  // The page shows the code as "authorizationCode#state"
-  const [code, returnedState] = pasted.trim().split("#");
-  if (!code) throw new Error("Empty authorization code");
-  if (returnedState && returnedState !== state) throw new Error("State mismatch — possible CSRF, aborting");
-
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "authorization_code",
-      code,
-      state: returnedState ?? state,
-      client_id: CLIENT_ID,
-      redirect_uri: REDIRECT_URI,
-      code_verifier: verifier,
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Token exchange failed: ${res.status} ${await res.text()}`);
-  }
-  return (await res.json()) as TokenResponse;
-}
-
-async function main() {
-  const { verifier, challenge } = generatePkce();
-  const state = base64url(randomBytes(32));
-
+async function login() {
+  const request = createAuthorizationRequest();
   console.log("Open this URL in your browser and authorize:\n");
-  console.log(buildAuthorizeUrl(challenge, state));
+  console.log(request.url);
   console.log();
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const pasted = await rl.question("Paste the authorization code here: ");
   rl.close();
 
-  const tokens = await exchangeCode(pasted, verifier, state);
-
-  console.log("\nAuthenticated successfully!");
-  console.log(`access_token:  ${tokens.access_token}`);
-  if (tokens.refresh_token) console.log(`refresh_token: ${tokens.refresh_token}`);
-  if (tokens.expires_in) console.log(`expires_in:    ${tokens.expires_in}s`);
+  const tokens = await client.login(pasted, request);
+  console.log("\nAuthenticated successfully — tokens saved to tokens.json");
+  if (tokens.expiresAt) {
+    console.log(`Access token expires at ${new Date(tokens.expiresAt).toISOString()}`);
+  }
 }
 
-main().catch((err) => {
+async function token() {
+  console.log(await client.getAccessToken());
+}
+
+async function refresh() {
+  const tokens = await client.refresh();
+  console.log("Refreshed — new tokens saved to tokens.json");
+  if (tokens.expiresAt) {
+    console.log(`Access token expires at ${new Date(tokens.expiresAt).toISOString()}`);
+  }
+}
+
+async function whoami() {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { ...(await client.authHeaders()), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5",
+      max_tokens: 32,
+      messages: [{ role: "user", content: "Reply with exactly: token works" }],
+    }),
+  });
+  if (!res.ok) throw new Error(`API call failed: ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as { content: Array<{ type: string; text?: string }> };
+  console.log(data.content.find((b) => b.type === "text")?.text ?? JSON.stringify(data));
+}
+
+const commands: Record<string, () => Promise<void>> = { login, token, refresh, whoami };
+const command = commands[process.argv[2] ?? "login"];
+
+if (!command) {
+  console.error(`Unknown command "${process.argv[2]}". Use: login | token | refresh | whoami`);
+  process.exit(1);
+}
+
+command().catch((err) => {
   console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });
