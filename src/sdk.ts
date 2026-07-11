@@ -17,7 +17,13 @@ export const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 export const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 export const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
 export const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
-export const SCOPES = "org:create_api_key user:profile user:inference";
+// `user:sessions:claude_code` is required to create/drive remote sessions (the
+// `rc` command). The others match what Claude Code CLI requests.
+export const SCOPES =
+  "org:create_api_key user:profile user:inference user:sessions:claude_code";
+
+export const API_BASE = "https://api.anthropic.com";
+export const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 
 /** Refresh this many ms before the access token actually expires. */
 const EXPIRY_SKEW_MS = 60_000;
@@ -173,12 +179,37 @@ export class ClaudeAuthClient {
     return this.#tokens.accessToken;
   }
 
-  /** Headers for calling the Anthropic API with this account token. */
-  async authHeaders(): Promise<Record<string, string>> {
+  /**
+   * Headers for calling the Anthropic API with this account token.
+   * Extra `anthropic-beta` flags (e.g. the managed-agents beta) are appended
+   * to the required `oauth-2025-04-20` flag.
+   */
+  async authHeaders(extraBeta: string[] = []): Promise<Record<string, string>> {
     return {
       Authorization: `Bearer ${await this.getAccessToken()}`,
-      "anthropic-beta": "oauth-2025-04-20",
+      "anthropic-beta": ["oauth-2025-04-20", ...extraBeta].join(","),
       "anthropic-version": "2023-06-01",
     };
+  }
+
+  /**
+   * Authenticated fetch against api.anthropic.com. Prepends API_BASE to a
+   * leading-slash path, attaches auth + beta headers, and refreshes the token
+   * transparently. Throws with the status + body on a non-2xx response.
+   */
+  async apiFetch(
+    path: string,
+    init: RequestInit & { beta?: string[] } = {},
+  ): Promise<Response> {
+    const { beta = [], headers, ...rest } = init;
+    const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+    const res = await fetch(url, {
+      ...rest,
+      headers: { ...(await this.authHeaders(beta)), ...headers },
+    });
+    if (!res.ok) {
+      throw new Error(`${rest.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`);
+    }
+    return res;
   }
 }

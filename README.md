@@ -50,9 +50,29 @@ node src/index.ts login    # print the URL, paste the code back, save tokens.jso
 node src/index.ts token    # print a valid access token (auto-refreshes if expired)
 node src/index.ts refresh  # force a refresh now
 node src/index.ts whoami   # fetch and show account/organization info for the logged-in user
+node src/index.ts rc       # start a remote session (equivalent of Claude Code's `claude rc`)
 ```
 
 Each `login` run generates a fresh verifier/state, so paste the code into the same run that printed the URL.
+
+## Remote sessions (`rc`)
+
+`node src/index.ts rc` is the buildable core of Claude Code's `claude rc` (remote-control) command. It starts a **remote session** on Anthropic's infrastructure, prints a `claude.ai/code` URL you can use to drive it from the web or mobile app, streams the agent's events into your terminal, and lets you type messages back.
+
+> Claude Code's full `claude rc` also runs a *local bridge* so remote turns can execute tools on your machine. That local tool-execution bridge is **out of scope** here — this implements starting and driving the remote session, over the same Managed Agents endpoints (`POST /v1/sessions`, `POST /v1/sessions/{id}/events`, `GET /v1/sessions/{id}/events/stream`) the CLI uses.
+
+**Requirements:**
+
+1. **The `user:sessions:claude_code` scope.** It's now in the default scope set, so a fresh `login` grants it. If you authenticated before this was added, run `node src/index.ts login` again.
+2. **A Managed Agent + environment** in your workspace. Create them once (e.g. with the `ant` CLI — `ant beta:agents create`, `ant beta:environments create`) and pass the IDs via environment variables:
+
+```bash
+export CLAUDE_AGENT_ID=agent_...
+export CLAUDE_ENVIRONMENT_ID=env_...
+node src/index.ts rc
+```
+
+You'll see the session ID, the control URL, and a `>` prompt. Type a message and the agent's replies stream back. Open the control URL on your phone to continue the same session there.
 
 ## SDK usage
 
@@ -101,6 +121,9 @@ Stateless functions are also exported if you want to manage token storage yourse
 | `client.getAccessToken()` | Valid access token; auto-refreshes within 60 s of expiry. |
 | `client.authHeaders()` | Ready-to-use headers for `api.anthropic.com`. |
 | `client.refresh()` | Force refresh + persist. |
+| `client.apiFetch(path, { beta?, ... })` | Authenticated fetch against `api.anthropic.com` with auto-refresh; attaches OAuth + any extra beta headers. |
+
+Remote-session helpers live in `src/remote.ts`: `createSession(client, {agent, environmentId})`, `sendUserMessage(client, id, text)`, `streamEvents(client, id)` (async iterator over decoded SSE events), and `controlUrl(id)`.
 
 ## Security notes
 

@@ -5,9 +5,11 @@
  *   node src/index.ts token    print a valid access token (auto-refreshes if expired)
  *   node src/index.ts refresh  force a refresh and save the new tokens
  *   node src/index.ts whoami   fetch and show account/organization info
+ *   node src/index.ts rc       start a remote session (Claude Code `rc` equivalent)
  */
 import { createInterface } from "node:readline/promises";
 import { ClaudeAuthClient, createAuthorizationRequest } from "./sdk.ts";
+import { controlUrl, createSession, sendUserMessage, streamEvents } from "./remote.ts";
 
 const client = new ClaudeAuthClient({ tokenFile: "tokens.json" });
 
@@ -70,11 +72,75 @@ async function whoami() {
   console.log(JSON.stringify(profile, null, 2));
 }
 
-const commands: Record<string, () => Promise<void>> = { login, token, refresh, whoami };
+async function rc() {
+  const agent = process.env.CLAUDE_AGENT_ID;
+  const environmentId = process.env.CLAUDE_ENVIRONMENT_ID;
+  if (!agent || !environmentId) {
+    throw new Error(
+      "Set CLAUDE_AGENT_ID and CLAUDE_ENVIRONMENT_ID (from your Managed Agents setup) before starting a remote session.",
+    );
+  }
+
+  let session;
+  try {
+    session = await createSession(client, {
+      agent,
+      environmentId,
+      title: `remote-control @ ${process.env.HOSTNAME ?? "local"}`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/40[13]/.test(msg)) {
+      throw new Error(
+        `${msg}\n\nRemote sessions need the "user:sessions:claude_code" scope. ` +
+          `If you logged in before this was added, run: node src/index.ts login`,
+      );
+    }
+    throw err;
+  }
+  console.log(`Remote session started: ${session.id}`);
+  console.log(`Control it from:        ${controlUrl(session.id)}\n`);
+
+  // Open the stream first so we don't miss early events (stream-before-send).
+  const controller = new AbortController();
+  const pump = (async () => {
+    for await (const event of streamEvents(client, session.id, controller.signal)) {
+      switch (event.type) {
+        case "agent.message":
+          for (const block of (event.content as Array<{ type: string; text?: string }>) ?? [])
+            if (block.type === "text") process.stdout.write(block.text ?? "");
+          process.stdout.write("\n");
+          break;
+        case "session.status_idle":
+        case "session.status_idled":
+          process.stdout.write("[idle — type a message]\n> ");
+          break;
+        case "session.status_terminated":
+          console.log("[session terminated]");
+          controller.abort();
+          break;
+      }
+    }
+  })();
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  console.log("Type messages to the remote session (Ctrl-C to quit).\n> ");
+  for await (const line of rl) {
+    if (!line.trim()) {
+      process.stdout.write("> ");
+      continue;
+    }
+    await sendUserMessage(client, session.id, line);
+  }
+  controller.abort();
+  await pump.catch(() => {});
+}
+
+const commands: Record<string, () => Promise<void>> = { login, token, refresh, whoami, rc };
 const command = commands[process.argv[2] ?? "login"];
 
 if (!command) {
-  console.error(`Unknown command "${process.argv[2]}". Use: login | token | refresh | whoami`);
+  console.error(`Unknown command "${process.argv[2]}". Use: login | token | refresh | whoami | rc`);
   process.exit(1);
 }
 
