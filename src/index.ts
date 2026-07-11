@@ -4,7 +4,7 @@
  *   node src/index.ts login    interactive flow: print URL, paste code, save tokens
  *   node src/index.ts token    print a valid access token (auto-refreshes if expired)
  *   node src/index.ts refresh  force a refresh and save the new tokens
- *   node src/index.ts whoami   call the API with the token to prove it works
+ *   node src/index.ts whoami   fetch and show account/organization info
  */
 import { createInterface } from "node:readline/promises";
 import { ClaudeAuthClient, createAuthorizationRequest } from "./sdk.ts";
@@ -41,18 +41,33 @@ async function refresh() {
 }
 
 async function whoami() {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { ...(await client.authHeaders()), "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5",
-      max_tokens: 32,
-      messages: [{ role: "user", content: "Reply with exactly: token works" }],
-    }),
+  const res = await fetch("https://api.anthropic.com/api/oauth/profile", {
+    headers: await client.authHeaders(),
   });
-  if (!res.ok) throw new Error(`API call failed: ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { content: Array<{ type: string; text?: string }> };
-  console.log(data.content.find((b) => b.type === "text")?.text ?? JSON.stringify(data));
+  if (!res.ok) throw new Error(`Profile request failed: ${res.status} ${await res.text()}`);
+
+  const profile = (await res.json()) as {
+    account?: { uuid?: string; email?: string; full_name?: string; display_name?: string };
+    organization?: { uuid?: string; name?: string; organization_type?: string };
+  };
+
+  const { account, organization } = profile;
+  if (account) {
+    console.log("Account:");
+    if (account.full_name ?? account.display_name)
+      console.log(`  name:  ${account.full_name ?? account.display_name}`);
+    if (account.email) console.log(`  email: ${account.email}`);
+    if (account.uuid) console.log(`  uuid:  ${account.uuid}`);
+  }
+  if (organization) {
+    console.log("Organization:");
+    if (organization.name) console.log(`  name: ${organization.name}`);
+    if (organization.organization_type) console.log(`  type: ${organization.organization_type}`);
+    if (organization.uuid) console.log(`  uuid: ${organization.uuid}`);
+  }
+
+  console.log("\nFull response:");
+  console.log(JSON.stringify(profile, null, 2));
 }
 
 const commands: Record<string, () => Promise<void>> = { login, token, refresh, whoami };

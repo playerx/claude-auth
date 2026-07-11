@@ -49,7 +49,7 @@ npm install          # dev deps only (typescript for typechecking)
 node src/index.ts login    # print the URL, paste the code back, save tokens.json
 node src/index.ts token    # print a valid access token (auto-refreshes if expired)
 node src/index.ts refresh  # force a refresh now
-node src/index.ts whoami   # make a real API call with the token to prove it works
+node src/index.ts whoami   # fetch and show account/organization info for the logged-in user
 ```
 
 Each `login` run generates a fresh verifier/state, so paste the code into the same run that printed the URL.
